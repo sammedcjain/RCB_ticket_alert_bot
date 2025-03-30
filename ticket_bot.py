@@ -20,6 +20,9 @@ except ImportError:
     subprocess.check_call(["pip", "install", "psutil"])
     import psutil
 from dotenv import load_dotenv  
+from telegram.request import HTTPXRequest
+from telegram.error import TimedOut
+
 load_dotenv()
 
 # Configure logging
@@ -152,41 +155,41 @@ def format_current_events():
     return message
 
 async def telegram_message_worker():
-    """Background worker to process Telegram messages with rate limiting"""
     while True:
         item = await telegram_message_queue.get()
+        context, chat_id, text, parse_mode, retry_count = item
         try:
-            context, chat_id, text, parse_mode = item
-            
-            # Convert chat_id to integer if it's a string of digits
             chat_id_to_use = int(chat_id) if isinstance(chat_id, str) and chat_id.lstrip('-').isdigit() else chat_id
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id_to_use,
-                    text=text,
-                    parse_mode=parse_mode
-                )
-                logger.info(f"Message sent to {chat_id_to_use}")
-            except Exception as e:
-                logger.error(f"Error sending message: {e}")
-                # If we hit a rate limit, wait longer before next message
-                if "RetryAfter" in str(e):
+            await context.bot.send_message(
+                chat_id=chat_id_to_use,
+                text=text,
+                parse_mode=parse_mode
+            )
+            logger.info(f"Message sent to {chat_id_to_use}")
+        except TimedOut:
+            if retry_count < 3:
+                logger.warning(f"Timeout occurred while sending message to {chat_id_to_use}. Retry {retry_count + 1}/3 in 10 seconds...")
+                await asyncio.sleep(10)
+                await telegram_message_queue.put((context, chat_id, text, parse_mode, retry_count + 1))
+            else:
+                logger.error("Max retries reached for message. Dropping message.")
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+            if "RetryAfter" in str(e):
+                try:
                     retry_seconds = int(str(e).split("Retry in ")[1].split(" ")[0])
                     logger.info(f"Rate limited. Waiting {retry_seconds} seconds")
                     await asyncio.sleep(retry_seconds)
-                    # Put the message back in the queue
-                    await telegram_message_queue.put(item)
-        except Exception as e:
-            logger.error(f"Error in telegram message worker: {e}")
-        
-        # Wait between messages to avoid rate limits
-        await asyncio.sleep(telegram_rate_limit_sleep)
-        telegram_message_queue.task_done()
+                    await telegram_message_queue.put((context, chat_id, text, parse_mode, retry_count))
+                except (IndexError, ValueError):
+                    logger.error("Failed to parse RetryAfter seconds")
+        finally:
+            await asyncio.sleep(telegram_rate_limit_sleep)
+            telegram_message_queue.task_done()
 
 async def send_message(context, chat_id, message, parse_mode='Markdown'):
     """Queue a message to be sent to Telegram with rate limiting"""
-    await telegram_message_queue.put((context, chat_id, message, parse_mode))
+    await telegram_message_queue.put((context, chat_id, message, parse_mode, 0))
     return True  # Immediate return as message is queued
 
 async def check_for_updates_with_notification(context):
@@ -428,8 +431,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def run_bot(existing_loop=None):
     """Run the Telegram bot"""
+    request = HTTPXRequest(
+    read_timeout=30.0,
+    write_timeout=30.0,
+    connect_timeout=30.0
+    )
     # Create the Application with the specified event loop
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application = Application.builder().token(TELEGRAM_TOKEN).request(request).build()
 
     # Add command handlers
     application.add_handler(CommandHandler("start", start_command))
