@@ -8,6 +8,9 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from datetime import datetime
 import random
+from fastapi import FastAPI
+import uvicorn
+import threading
 from dotenv import load_dotenv  
 load_dotenv()
 
@@ -255,26 +258,38 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text(default_response, parse_mode='Markdown')
 
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"message": "Bot is running"}
+
 def main():
     """Start the bot."""
     # Create the Application
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Add command handlers
+    # Add command handlers (assuming they are already defined)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("check", check_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("help", help_command))
-    
-    # Add message handler for mentions
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_mention))
-    
+
     # Set up periodic ticket checking job (every CHECK_INTERVAL seconds)
     job_queue = application.job_queue
     job_queue.run_repeating(check_for_updates_with_notification, interval=CHECK_INTERVAL, first=10)
-    
-    # Run the bot until the user presses Ctrl-C
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    # Create a new asyncio event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    # Start polling for updates
+    loop.run_until_complete(application.run_polling(allowed_updates=Update.ALL_TYPES))
 
 if __name__ == "__main__":
-    main()
+    # Run the bot in a separate thread
+    bot_thread = threading.Thread(target=main)
+    bot_thread.start()
+
+    # Start FastAPI server with Uvicorn (this runs in the main thread)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
