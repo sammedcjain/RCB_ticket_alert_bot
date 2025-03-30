@@ -283,8 +283,8 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Start polling for updates
-    loop.run_until_complete(application.run_polling(allowed_updates=Update.ALL_TYPES))
+    # Start polling for updates, but disable signal handling
+    loop.run_until_complete(application.run_polling(allowed_updates=Update.ALL_TYPES, stop_signals=None))
 
 if __name__ == "__main__":
     # Run the bot in a separate thread
